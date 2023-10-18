@@ -1,0 +1,6 @@
+type: module
+name: StarBerry Custom
+description: 'Custom module for Starberry'
+package: Starberry
+core_version_requirement: ^8 || ^9 || ^10
+project: 'starberry'

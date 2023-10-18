@@ -1,0 +1,118 @@
+<?php
+
+use Drupal\user\Entity\User;
+use Drupal\user\UserInterface;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\node\Entity\Node;
+use Drupal\file\Entity\File;
+use Drupal\paragraphs\Entity\Paragraph;
+use Drupal\profile\Entity\Profile;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Render\Markup;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpFoundation\RedirectResponse;
+use Drupal\Component\Utility\Xss;
+use GuzzleHttp\Client;
+use Drupal\Core\Url;
+use Drupal\image\Entity\ImageStyle;
+use Drupal\Core\Mail\MailManagerInterface;
+use Drupal\Component\Utility\SafeMarkup;
+use Drupal\Component\Utility\Html;
+
+
+/**
+ * Implementation of hook_cron().
+ */
+function starberry_cron() {
+  starberry_get_data();
+}
+/**
+ * Get any new properties that have been created.
+ */
+function starberry_get_data() {
+  $url = 'https://strapi-themes.q.starberry.com/api/properties';
+  $data = [
+    'headers' => [
+      'Content-Type' => 'application/x-www-form-urlencoded',
+      'Accept' => 'application/json',
+    ],
+  ];
+  $client = \Drupal::httpClient();
+  $request = $client->get($url, $data);
+  $response = (string) $request->getBody();
+  $response = json_decode($response);
+  if ($response->data) {
+    $properties = $response->data;
+    foreach ($properties as $property) {
+      $property_attributes = $property->attributes;
+      if (!starberry_check_node_exists($property->id)) {
+        $uri = $property_attributes->thumbnail;
+        // check first if the file exists for the uri    
+        $files = \Drupal::entityTypeManager()
+          ->getStorage('file')
+          ->loadByProperties(['uri' => $uri]);
+        $file = reset($files);
+        // if not create a file
+        if (!$file) {
+          $file = File::create([
+            'uri' => $uri,
+          ]);
+          $file->save();
+        }
+        $property_node = Node::create([
+          'type' => 'properties',
+          'title' => $property_attributes->title,
+          'field_id' => $property->id,
+          'field_crm_id' => $property_attributes->crm_id,
+          'field_slug' => $property_attributes->slug,
+          'field_bedroom' => $property_attributes->bedroom,
+          'field_bathroom' => $property_attributes->bathroom,
+          'field_display_address' => $property_attributes->display_address,
+          'field_currency' => $property_attributes->currency,
+          'field_price' => $property_attributes->price,
+          'field_status' => $property_attributes->status,
+          'field_max_price' => $property_attributes->max_price,
+          'field_latitude' => $property_attributes->latitude,
+          'field_longitude' => $property_attributes->longitude,
+          'body' => [
+            'value' => isset($property_attributes->description) && !empty($property_attributes->description) ? $property_attributes->description : '',
+            'format' => 'full_html',
+          ],
+          'field_thumbnail' => [
+            'target_id' => $file->id(),
+            'alt' => 'image',
+            'title' => $property_attributes->title,
+          ],
+        ]);
+        $paragraph = Paragraph::create([
+          'type' => 'negotiator',
+          'field_id' => $property_attributes->crm_negotiator_id->id,
+          'field_name' => $property_attributes->crm_negotiator_id->name,
+          'field_email' => $property_attributes->crm_negotiator_id->email,
+          'field_work_phone' => $property_attributes->crm_negotiator_id->work_phone,
+        ]);
+        $paragraph->setParentEntity($property_node, 'field_negotiator');
+        $paragraph->save();
+        $paragraphs[] = [
+          'target_id' => $paragraph->id(),
+          'target_revision_id' => $paragraph->getRevisionId(),
+        ];
+        $property_node->field_negotiator->setValue($paragraphs);
+        $property_node->setOwnerId(1);
+        $property_node->save();
+      }
+    }
+  }
+}
+
+function starberry_check_node_exists($id, $return_value = 'id') {
+  $db = \Drupal::database();
+  $query = $db->select('node__field_id', 'id');
+  $query->fields('id', ['entity_id']);
+  $query->condition('id.field_id_value', $id);
+  $results = $query->execute();
+  foreach ($results as $result) {
+    return $return_value == 'id' ? $result->entity_id : Node::load($result->entity_id);
+  }
+  return FALSE;
+}
